@@ -21,7 +21,7 @@ def set_job_state(job_id: str, state: str):
     conn.commit()
 
 def get_jobs_to_deliver():
-    # Deliver results after 2 minutes
+    # Deliver results after 2 minutes of taking the job
     rows = cursor.execute("""
         SELECT job_id FROM jobs 
         WHERE state='taken' AND 

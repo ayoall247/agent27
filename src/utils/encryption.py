@@ -1,4 +1,4 @@
-# Stub for future encryption logic
+# Stub encryption logic
 def encrypt_utf8_data(data: str, key: str) -> bytes:
     return data.encode('utf-8')
 
