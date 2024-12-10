@@ -1,7 +1,7 @@
+import json
 from web3 import Web3
 from src.config import CONFIG
 from src.utils.logger import logger
-import json
 
 READ_ONLY = CONFIG["READ_ONLY_MODE"]
 PRIVATE_KEY = CONFIG["PRIVATE_KEY"]
@@ -16,14 +16,12 @@ else:
     account = None
     logger.info("No private key or READ_ONLY mode enabled. Transactions will be simulated.")
 
-# Load the actual ABI from a JSON file or a verified source
-# Suppose you have the actual ABI from the repo in 'marketplace_abi.json'
-with open('marketplace_abi.json', 'r') as f:
-    MARKETPLACE_V1_ABI = json.load(f)
-
 if not CONFIG["MARKETPLACE_ADDRESS"]:
     logger.error("MARKETPLACE_ADDRESS not set. Exiting.")
     raise SystemExit("MARKETPLACE_ADDRESS not defined")
+
+with open('marketplace_abi.json', 'r') as f:
+    MARKETPLACE_V1_ABI = json.load(f)
 
 marketplace_contract = web3.eth.contract(address=Web3.to_checksum_address(CONFIG["MARKETPLACE_ADDRESS"]), abi=MARKETPLACE_V1_ABI)
 

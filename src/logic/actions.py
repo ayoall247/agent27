@@ -14,15 +14,13 @@ def take_job(job_id: str, revision: int):
     logger.info("Attempting to take job (jobId=%s, revision=%s)", job_id, revision)
     if CONFIG["READ_ONLY_MODE"] or not CONFIG["PRIVATE_KEY"]:
         reason = "READ_ONLY mode" if CONFIG["READ_ONLY_MODE"] else "no private key"
-        logger.info("Skipping takeJob action due to %s, simulating action. Job considered taken.", reason)
+        logger.info("Skipping takeJob action due to %s, simulating action.", reason)
         set_job_state(job_id, 'taken (simulated)')
         return
 
-    # Encode revision and jobId
     encoded = encode(['uint256', 'uint256'], [revision, int(job_id)])
     hash_ = w3.keccak(encoded)
 
-    # Sign the hash
     signature = web3.eth.account.sign_message(
         w3.toBytes(hexstr=hash_.hex()),
         private_key=CONFIG["PRIVATE_KEY"]

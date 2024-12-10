@@ -1,14 +1,16 @@
 import requests
 from src.utils.logger import logger
-from src.db import get_last_processed_timestamp, set_last_processed_timestamp, add_job
+from src.db import get_last_processed_timestamp
 from src.config import CONFIG
 
+# This query may or may not reflect the current contract events.
+# Adjust if the subsquid indexing changed or if different fields are needed.
 JOB_CREATED_QUERY = """
 query($fromTimestamp: Int!) {
   jobEvents(
     filter: {
       type_: {equalTo: 0},
-      timestamp_: {greaterThan: $fromTimestamp}
+      timestamp_: {gt: $fromTimestamp}
     },
     orderBy: timestamp_ASC,
     first: 50
