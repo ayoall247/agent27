@@ -17,14 +17,8 @@ def add_job(job_id: str):
     conn.commit()
 
 def set_job_state(job_id: str, state: str):
+    if job_id is None:
+        logger.error("No job_id provided, cannot set job state.")
+        return
     cursor.execute("UPDATE jobs SET state=? WHERE job_id=?", (state, job_id))
     conn.commit()
-
-def get_jobs_to_deliver():
-    # Deliver results after 2 minutes of taking the job
-    rows = cursor.execute("""
-        SELECT job_id FROM jobs 
-        WHERE state='taken' AND 
-        (strftime('%s','now') - strftime('%s',created_at)) > 120
-    """).fetchall()
-    return [{"job_id": r[0]} for r in rows]

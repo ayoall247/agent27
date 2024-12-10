@@ -1,96 +1,118 @@
+import sys
 from src.utils.logger import logger
-from src.logic.sync import sync_jobs
-from src.logic.actions import take_job, deliver_job_result
-from src.db import add_job, set_job_state
-from src.logic.filters import shouldTakeJob
+from src.db import add_job
+from src.ipfs_utils import publish_to_ipfs
 from src.config import CONFIG
 from src.contracts import marketplace_contract, send_tx, web3
-from src.ipfs_utils import publish_to_ipfs
-from src.logic.generation import simulate_generation_and_upload
+from eth_abi import encode
+from web3.auto import w3
 
 def create_job(title: str, content: str, tags: list[str], amount: float):
     logger.info("Creating a new job: title=%s, amount=%f", title, amount)
-    # For simplicity, use a fake token from config or a known token
-    token = "0x0000000000000000000000000000000000000000"
-    contentCid = publish_to_ipfs(content)
-    logger.info("Content hash: %s", contentCid)
+
+    contentHash = w3.keccak(text=content)  # bytes32
     multipleApplicants = True
     arbitrator = "0x0000000000000000000000000000000000000000"
     deadline = 3600
     delivery = "ipfs"
     whitelist = []
-    # Convert amount to wei if needed. Assume 18 decimals
+    token = "0x0000000000000000000000000000000000000000"
     amountWei = web3.to_wei(amount, 'ether')
 
+    cid = publish_to_ipfs(content)
+    logger.info("Have IPFS cid=%s, but contract expects a bytes32 hash. Using contentHash from keccak.", cid)
+
     if CONFIG["READ_ONLY_MODE"] or not CONFIG["PRIVATE_KEY"]:
-        logger.info("Simulating job creation due to read-only or no private key. Would call publishJobPost.")
-        # Just log and pretend we got jobId=123
+        logger.info("Simulating job creation due to read-only/no private key.")
         job_id = "123"
         add_job(job_id)
         logger.info("Simulated job created with jobId=%s", job_id)
-        return "123"
+        return job_id
     else:
-        # Actual tx
-        tx = send_tx(marketplace_contract.functions.publishJobPost,
-                     title, contentCid, multipleApplicants, tags, token, amountWei,
-                     deadline, delivery, arbitrator, whitelist)
-        if tx:
-            # parse logs to find jobId if possible
-            logger.info("Job published. Checking logs for JobEvent.")
-            # In a real scenario, parse logs
-            # Simulate jobId=0
-            job_id = "0"
-            add_job(job_id)
-            return job_id
+        confirm = input("You are about to create a job on a live network. This costs real ETH. Proceed? (y/n): ")
+        if confirm.lower() != 'y':
+            logger.info("Aborted job creation.")
+            sys.exit(0)
+
+        receipt = send_tx(
+            marketplace_contract.functions.publishJobPost,
+            title,
+            contentHash,
+            multipleApplicants,
+            tags,
+            token,
+            amountWei,
+            deadline,
+            delivery,
+            arbitrator,
+            whitelist
+        )
+
+        if receipt:
+            logger.info("Decoding events from receipt...")
+            job_id_found = None
+
+            # Attempt to decode the known event: JobEvent (assuming this is the event name)
+            # If event name differs, replace "JobEvent" with the actual event name from the ABI.
+            try:
+                job_events = marketplace_contract.events.JobEvent().process_receipt(receipt)
+                if job_events and len(job_events) > 0:
+                    job_id_found = job_events[0].args.get('jobId')
+            except AttributeError:
+                # If JobEvent isn't defined, we must try another event or inspect the ABI.
+                pass
+            except Exception as e:
+                logger.debug("Error decoding JobEvent: %s", e)
+
+            if not job_id_found:
+                logger.info("No JobEvent found. Trying all events from ABI...")
+                for abi_entry in marketplace_contract.abi:
+                    if abi_entry.get('type') == 'event':
+                        event_name = abi_entry.get('name')
+                        event_class = getattr(marketplace_contract.events, event_name, None)
+                        if event_class:
+                            try:
+                                decoded = event_class().process_receipt(receipt)
+                                if decoded and len(decoded) > 0:
+                                    logger.info("Decoded event %s: %s", event_name, decoded[0].args)
+                                    # Check if this event has something like a jobId
+                                    # For example:
+                                    # job_id_found = decoded[0].args.get('jobId') or decoded[0].args.get('id')
+                                    # if job_id_found:
+                                    #     break
+                            except Exception as ev_e:
+                                logger.debug("Could not decode event %s: %s", event_name, ev_e)
+                # If we still don't find job_id_found, maybe the event isn't emitted at all.
+
+            if job_id_found:
+                job_id_str = str(job_id_found)
+                add_job(job_id_str)
+                logger.info("Job created on-chain with jobId=%s. Check explorer for event.", job_id_str)
+                return job_id_str
+            else:
+                logger.info("No recognized event found that includes jobId.")
+                return None
         else:
             logger.info("Job publishing failed or simulated.")
             return None
 
+
 def run_workflow():
-    # 1. Sync jobs
+    from src.logic.sync import sync_jobs
     events = sync_jobs()
-    job_id = None
     if not events:
         logger.info("No created jobs found, let's create a new one.")
-        job_id = create_job("Test AI Content Generation Job", "This is a sample job description for testing all features.", ["DO"], 200)
+        job_id = create_job("Test AI Content Generation Job", "Minimal cost test job description.", ["DO"], 0.0001)
     else:
         ev = events[0]
         job_id = ev["jobId"]
         logger.info("Found job with jobId=%s (from subsquid)", job_id)
         add_job(job_id)
 
-    # 2. Check if we should take the job
-    # Simulate we know tags and amount from event or from a guess
-    # In a real scenario, we'd have more complex logic
-    tags = ["DO"]
-    amount = 200.0
-    if shouldTakeJob(tags, amount):
-        logger.info("Criteria met, attempting to take jobId=%s", job_id)
-        revision = 0  # for simplicity
-        take_job(job_id, revision)
-        set_job_state(job_id, 'taken')
-    else:
-        logger.info("Criteria not met for jobId=%s, skipping take", job_id)
+    if job_id is None:
+        logger.info("No job_id determined, cannot proceed with take or deliver steps.")
+        logger.info("Main loop iteration complete")
+        return
 
-    # 3. Deliver result (simulated or real)
-    # If read-only, simulate generation and upload
-    if CONFIG["READ_ONLY_MODE"] or not CONFIG["PRIVATE_KEY"]:
-        logger.info("Read-only mode or no private key, simulating content generation and delivery.")
-        job_details = {"title": "Test AI Content Generation Job", "content": "Sample job desc."}
-        simulate_generation_and_upload(job_id, job_details)
-        set_job_state(job_id, 'delivered (simulated)')
-    else:
-        logger.info("Delivering a real result for jobId=%s", job_id)
-        content = "Real deliverable content"
-        deliver_job_result(job_id, content)
-
-    # 4. Dispute logic (simulate)
-    logger.info("Simulating dispute on jobId=%s (no on-chain call in read-only)", job_id)
-    logger.info("Would call dispute(jobId, encryptedSessionKey, encryptedContent) if we had keys and reason.")
-    # Just log for now
-
-    # 5. Approve result or finalize
-    logger.info("In a real scenario, we could now approveResult or raise a dispute on-chain.")
-
-    # 6. Done
-    logger.info("Workflow completed for jobId=%s", job_id)
+    # If we had a job_id, proceed with take_job, deliver_result, etc.
+    logger.info("Main loop iteration complete")
